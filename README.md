@@ -26,9 +26,9 @@ npm run deploy
 
 The custom domain is configured in `wrangler.jsonc` (`routes`) and requires the zone to exist on the Cloudflare account you deploy from. The `workers.dev` URL works regardless.
 
-## Known limitations
+## TURN
 
-- STUN-only ICE (Google public STUN). Peers where both sides are behind strict/symmetric NAT need a TURN relay to connect — Cloudflare Calls TURN is the planned fix.
+`/turn` mints short-lived ICE credentials from Cloudflare Calls (secrets `TURN_KEY_ID` + `TURN_API_TOKEN`, set via `wrangler secret put`). Without them the app falls back to public STUN only, and peers behind strict/symmetric NAT may fail to connect.
 
 ## Deploys
 
