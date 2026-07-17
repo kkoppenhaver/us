@@ -18,10 +18,30 @@ const ROOM = (new URLSearchParams(location.search).get("room") || "main")
 
 const CLIENT_ID = crypto.randomUUID();
 
-const ICE_SERVERS = [
+const FALLBACK_ICE_SERVERS = [
   { urls: "stun:stun.l.google.com:19302" },
   { urls: "stun:stun1.l.google.com:19302" },
 ];
+
+// Replaced with Cloudflare TURN servers (STUN included) when /turn responds;
+// TURN relays media for peers whose networks block direct connections.
+let iceServers = FALLBACK_ICE_SERVERS;
+
+async function loadIceServers() {
+  try {
+    const res = await fetch("/turn");
+    if (!res.ok) return;
+    const data = await res.json();
+    const servers = Array.isArray(data.iceServers)
+      ? data.iceServers
+      : [data.iceServers];
+    if (servers.length && servers[0]?.urls) {
+      iceServers = [...servers, ...FALLBACK_ICE_SERVERS];
+    }
+  } catch {
+    // STUN-only fallback stands.
+  }
+}
 
 const KEEPALIVE_MS = 20_000;
 // No pong (or any traffic) for this long = the socket is silently dead.
@@ -109,6 +129,8 @@ joinBtn.addEventListener("click", async () => {
   el("local-avatar").textContent = displayName[0].toUpperCase();
   el("local-tile").querySelector(".tile-name").textContent = displayName;
   el("gate").hidden = true;
+  // TURN credentials must be in hand before the first peer connection.
+  await loadIceServers();
   connect();
 
   // Restore ML noise suppression if it was on last time. Called inside the
@@ -361,7 +383,7 @@ function getPeer(id) {
   const existing = peers.get(id);
   if (existing) return existing;
 
-  const pc = new RTCPeerConnection({ iceServers: ICE_SERVERS });
+  const pc = new RTCPeerConnection({ iceServers });
   const tile = createTile(id);
   const videoSenders = [];
   // Perfect negotiation (per pair): the peer with the lower id is "polite" —
