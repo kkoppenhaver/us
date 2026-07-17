@@ -104,6 +104,15 @@ body {
 /* Peer dropped from signaling; kept during the rejoin grace window. */
 .tile.stale { opacity: 0.55; }
 
+/* Screen shares letterbox instead of cropping, and are never mirrored. */
+.tile.sharing video {
+  object-fit: contain;
+  background: #000;
+  transform: none;
+}
+
+.tile.sharing .cam-overlay { display: none; }
+
 /* Camera-off overlay with an avatar initial. */
 .cam-overlay {
   position: absolute;
@@ -247,6 +256,43 @@ body {
 .ctl:disabled { opacity: 0.4; cursor: not-allowed; transform: none; }
 .ctl.off .slash { display: block; }
 .ctl.danger:hover { background: #4a1f1f; }
+
+.settings-panel {
+  position: fixed;
+  bottom: 90px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 8;
+  display: flex;
+  flex-direction: column;
+  gap: 0.9rem;
+  padding: 1rem 1.25rem;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.5);
+  min-width: min(320px, calc(100vw - 2rem));
+}
+
+.settings-panel label {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  font-size: 0.8rem;
+  color: var(--muted);
+}
+
+.settings-panel select {
+  padding: 0.5rem 0.6rem;
+  font-size: 0.9rem;
+  color: var(--text);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  outline: none;
+}
+
+.settings-panel select:focus { border-color: var(--accent); }
 
 .gate {
   position: fixed;

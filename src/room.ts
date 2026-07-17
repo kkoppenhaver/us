@@ -10,11 +10,12 @@ interface Attachment {
   name: string;
   muted: boolean;
   cameraOff: boolean;
+  sharing: boolean;
 }
 
 type ClientMessage =
   | { type: "signal"; to: string; data: unknown }
-  | { type: "state"; muted?: boolean; cameraOff?: boolean };
+  | { type: "state"; muted?: boolean; cameraOff?: boolean; sharing?: boolean };
 
 /**
  * One PortalRoom per room name. Relays WebRTC signaling messages
@@ -49,6 +50,7 @@ export class PortalRoom extends DurableObject<Env> {
         .slice(0, 32) || "Guest";
     const muted = url.searchParams.get("muted") === "1";
     const cameraOff = url.searchParams.get("camoff") === "1";
+    const sharing = url.searchParams.get("sharing") === "1";
 
     const sockets = this.ctx.getWebSockets();
     const replaced = sockets.filter((ws) => this.peerId(ws) === id);
@@ -63,7 +65,7 @@ export class PortalRoom extends DurableObject<Env> {
     const pair = new WebSocketPair();
     const [client, server] = Object.values(pair);
     this.ctx.acceptWebSocket(server);
-    server.serializeAttachment({ id, name, muted, cameraOff } satisfies Attachment);
+    server.serializeAttachment({ id, name, muted, cameraOff, sharing } satisfies Attachment);
 
     // Close a reconnecting client's previous socket only after the new one
     // is registered, so announceDeparture sees the replacement and stays quiet.
@@ -80,7 +82,7 @@ export class PortalRoom extends DurableObject<Env> {
         peers: others.map((ws) => this.peerInfo(ws)),
       })
     );
-    const joined = JSON.stringify({ type: "peer-joined", id, name, muted, cameraOff });
+    const joined = JSON.stringify({ type: "peer-joined", id, name, muted, cameraOff, sharing });
     for (const ws of others) {
       try {
         ws.send(joined);
@@ -105,6 +107,7 @@ export class PortalRoom extends DurableObject<Env> {
       if (!attachment) return;
       attachment.muted = !!msg.muted;
       attachment.cameraOff = !!msg.cameraOff;
+      attachment.sharing = !!msg.sharing;
       ws.serializeAttachment(attachment);
       this.broadcast({ type: "peer-state", ...this.peerInfo(ws) }, ws);
       return;
@@ -165,6 +168,7 @@ export class PortalRoom extends DurableObject<Env> {
       name: attachment?.name ?? "Guest",
       muted: attachment?.muted ?? false,
       cameraOff: attachment?.cameraOff ?? false,
+      sharing: attachment?.sharing ?? false,
     };
   }
 }

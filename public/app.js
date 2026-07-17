@@ -51,7 +51,23 @@ const MAX_BACKOFF_MS = 30_000;
 // if they rejoin within this window (signaling blip), nothing is torn down.
 const PEER_LEFT_GRACE_MS = 8_000;
 // Cap per-peer video upload so mesh streams don't fight for bandwidth.
-const MAX_VIDEO_BITRATE = 1_000_000;
+// Screen shares get more headroom and hold resolution (text legibility);
+// cameras hold framerate.
+const CAMERA_PROFILE = { maxBitrate: 1_000_000, degradation: "maintain-framerate" };
+const SCREEN_PROFILE = { maxBitrate: 2_500_000, degradation: "maintain-resolution" };
+
+const AUDIO_CONSTRAINTS = {
+  echoCancellation: true,
+  noiseSuppression: true,
+  autoGainControl: true,
+  // Non-standard but harmless where unsupported; enables OS-level
+  // voice isolation on platforms that offer it (e.g. recent macOS).
+  voiceIsolation: true,
+};
+const VIDEO_CONSTRAINTS = {
+  width: { ideal: 1280 },
+  height: { ideal: 720 },
+};
 
 const MIC_OFF_SVG = `
   <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
@@ -106,17 +122,14 @@ joinBtn.addEventListener("click", async () => {
   if (!displayName) return;
   localStorage.setItem("portal-name", displayName);
 
+  // Prefer the devices used last time; "ideal" quietly falls back if
+  // they're unplugged.
+  const savedMic = localStorage.getItem("portal-mic");
+  const savedCam = localStorage.getItem("portal-cam");
   try {
     localStream = await navigator.mediaDevices.getUserMedia({
-      video: { width: { ideal: 1280 }, height: { ideal: 720 } },
-      audio: {
-        echoCancellation: true,
-        noiseSuppression: true,
-        autoGainControl: true,
-        // Non-standard but harmless where unsupported; enables OS-level
-        // voice isolation on platforms that offer it (e.g. recent macOS).
-        voiceIsolation: true,
-      },
+      video: { ...VIDEO_CONSTRAINTS, ...(savedCam && { deviceId: { ideal: savedCam } }) },
+      audio: { ...AUDIO_CONSTRAINTS, ...(savedMic && { deviceId: { ideal: savedMic } }) },
     });
   } catch (err) {
     const msg = el("gate-error");
@@ -129,6 +142,7 @@ joinBtn.addEventListener("click", async () => {
   el("local-avatar").textContent = displayName[0].toUpperCase();
   el("local-tile").querySelector(".tile-name").textContent = displayName;
   el("gate").hidden = true;
+  refreshDevices();
   // TURN credentials must be in hand before the first peer connection.
   await loadIceServers();
   connect();
@@ -150,6 +164,7 @@ el("btn-leave").addEventListener("click", () => {
   ws?.close();
   for (const id of [...peers.keys()]) removePeer(id);
   localStream?.getTracks().forEach((t) => t.stop());
+  screenTrack?.stop();
   processedTrack?.stop();
   audioCtx?.close();
   el("local-video").srcObject = null;
@@ -249,7 +264,145 @@ function currentState() {
   return {
     muted: !(localStream?.getAudioTracks()[0]?.enabled ?? true),
     cameraOff: !(localStream?.getVideoTracks()[0]?.enabled ?? true),
+    sharing: !!screenTrack,
   };
+}
+
+// ---------- Device picker ----------
+
+const settingsPanel = el("settings-panel");
+
+el("btn-settings").addEventListener("click", () => {
+  settingsPanel.hidden = !settingsPanel.hidden;
+  if (!settingsPanel.hidden) refreshDevices();
+});
+
+async function refreshDevices() {
+  if (!localStream) return;
+  const devices = await navigator.mediaDevices.enumerateDevices();
+  fillDeviceSelect(el("sel-mic"), devices, "audioinput",
+    localStream.getAudioTracks()[0]?.getSettings().deviceId);
+  fillDeviceSelect(el("sel-cam"), devices, "videoinput",
+    localStream.getVideoTracks()[0]?.getSettings().deviceId);
+}
+
+function fillDeviceSelect(select, devices, kind, currentId) {
+  select.replaceChildren(
+    ...devices
+      .filter((d) => d.kind === kind && d.deviceId)
+      .map((d, i) => {
+        const option = document.createElement("option");
+        option.value = d.deviceId;
+        option.textContent = d.label || `${kind === "audioinput" ? "Microphone" : "Camera"} ${i + 1}`;
+        option.selected = d.deviceId === currentId;
+        return option;
+      })
+  );
+}
+
+navigator.mediaDevices.addEventListener?.("devicechange", refreshDevices);
+
+el("sel-mic").addEventListener("change", (e) => switchDevice("audio", e.target.value));
+el("sel-cam").addEventListener("change", (e) => switchDevice("video", e.target.value));
+
+async function switchDevice(kind, deviceId) {
+  if (!localStream) return;
+  let newTrack;
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia(
+      kind === "audio"
+        ? { audio: { ...AUDIO_CONSTRAINTS, deviceId: { exact: deviceId } } }
+        : { video: { ...VIDEO_CONSTRAINTS, deviceId: { exact: deviceId } } }
+    );
+    newTrack = stream.getTracks()[0];
+  } catch (err) {
+    console.error("device switch failed", err);
+    refreshDevices();
+    return;
+  }
+
+  const oldTrack =
+    kind === "audio" ? localStream.getAudioTracks()[0] : localStream.getVideoTracks()[0];
+  newTrack.enabled = oldTrack?.enabled ?? true; // carry mute state over
+  if (oldTrack) {
+    localStream.removeTrack(oldTrack);
+    oldTrack.stop();
+  }
+  localStream.addTrack(newTrack);
+  localStorage.setItem(kind === "audio" ? "portal-mic" : "portal-cam", deviceId);
+
+  if (kind === "audio") {
+    if (sourceNode) {
+      // Re-point the noise-suppression graph at the new mic.
+      sourceNode.disconnect();
+      sourceNode = audioCtx.createMediaStreamSource(new MediaStream([newTrack]));
+      sourceNode.connect(rnnoiseNode);
+    }
+    // Peers receive the processed track while NS is on; nothing to swap then.
+    if (!nsEnabled) await replaceOutgoing("audio", newTrack);
+  } else {
+    // While screen sharing, the camera swap shows up when sharing ends.
+    if (!screenTrack) await replaceOutgoing("video", newTrack);
+  }
+}
+
+async function replaceOutgoing(kind, track) {
+  await Promise.all(
+    [...peers.values()].map(({ pc }) => {
+      const sender = pc.getSenders().find((s) => s.track?.kind === kind);
+      return sender ? sender.replaceTrack(track) : Promise.resolve();
+    })
+  );
+}
+
+// ---------- Screen sharing ----------
+
+let screenTrack = null;
+
+el("btn-share").addEventListener("click", async () => {
+  if (!localStream) return;
+  if (screenTrack) {
+    stopScreenShare();
+    return;
+  }
+  let stream;
+  try {
+    stream = await navigator.mediaDevices.getDisplayMedia({
+      video: { frameRate: { ideal: 30 } },
+      audio: false,
+    });
+  } catch {
+    return; // picker dismissed
+  }
+  screenTrack = stream.getVideoTracks()[0];
+  // Browser-chrome "Stop sharing" button ends the track out from under us.
+  screenTrack.addEventListener("ended", stopScreenShare);
+
+  await replaceOutgoing("video", screenTrack);
+  recapVideoSenders();
+  el("local-video").srcObject = new MediaStream([screenTrack]);
+  el("local-tile").classList.add("sharing");
+  el("btn-share").classList.add("active");
+  sendState();
+});
+
+function stopScreenShare() {
+  if (!screenTrack) return;
+  screenTrack.stop();
+  screenTrack = null;
+  const camera = localStream?.getVideoTracks()[0];
+  if (camera) replaceOutgoing("video", camera);
+  recapVideoSenders();
+  if (localStream) el("local-video").srcObject = localStream;
+  el("local-tile").classList.remove("sharing");
+  el("btn-share").classList.remove("active");
+  sendState();
+}
+
+function recapVideoSenders() {
+  for (const peer of peers.values()) {
+    peer.videoSenders.forEach(capVideoSender);
+  }
 }
 
 function setStatus(state, text) {
@@ -270,12 +423,12 @@ function updateCount() {
 // ---------- Signaling ----------
 
 function connect() {
-  const { muted, cameraOff } = currentState();
+  const { muted, cameraOff, sharing } = currentState();
   ws = new WebSocket(
     `${location.protocol === "https:" ? "wss" : "ws"}://${location.host}` +
       `/ws?room=${ROOM}&peer=${CLIENT_ID}` +
       `&name=${encodeURIComponent(displayName)}` +
-      `&muted=${muted ? 1 : 0}&camoff=${cameraOff ? 1 : 0}`
+      `&muted=${muted ? 1 : 0}&camoff=${cameraOff ? 1 : 0}&sharing=${sharing ? 1 : 0}`
   );
 
   ws.addEventListener("open", () => {
@@ -450,15 +603,16 @@ function getPeer(id) {
 }
 
 async function capVideoSender(sender) {
+  const profile = screenTrack ? SCREEN_PROFILE : CAMERA_PROFILE;
   try {
     const params = sender.getParameters();
     if (!params.encodings || params.encodings.length === 0) {
       params.encodings = [{}];
     }
     for (const encoding of params.encodings) {
-      encoding.maxBitrate = MAX_VIDEO_BITRATE;
+      encoding.maxBitrate = profile.maxBitrate;
     }
-    params.degradationPreference = "maintain-framerate";
+    params.degradationPreference = profile.degradation;
     await sender.setParameters(params);
   } catch {
     // Not negotiated yet — retried on the "connected" state change.
@@ -568,12 +722,13 @@ setInterval(async () => {
   }
 }, 2_000);
 
-function applyPeerState(id, { muted, cameraOff }) {
-  states.set(id, { muted: !!muted, cameraOff: !!cameraOff });
+function applyPeerState(id, { muted, cameraOff, sharing }) {
+  states.set(id, { muted: !!muted, cameraOff: !!cameraOff, sharing: !!sharing });
   const tile = peers.get(id)?.tile;
   if (tile) {
     tile.classList.toggle("muted", !!muted);
     tile.classList.toggle("cam-off", !!cameraOff);
+    tile.classList.toggle("sharing", !!sharing);
   }
 }
 
