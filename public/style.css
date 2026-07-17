@@ -86,6 +86,75 @@ body {
 
 .tile.local video { transform: scaleX(-1); }
 
+/* Picture-in-picture: with peers present, your own view floats small. */
+#stage.has-peers .tile.local {
+  position: absolute;
+  right: 1.5rem;
+  bottom: 1.5rem;
+  width: clamp(140px, 18vw, 260px);
+  min-height: 0;
+  aspect-ratio: 4 / 3;
+  z-index: 5;
+  border-color: #2e3950;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5);
+}
+
+#stage.has-peers .tile.local .tile-name { font-size: 0.65rem; }
+
+/* Peer dropped from signaling; kept during the rejoin grace window. */
+.tile.stale { opacity: 0.55; }
+
+/* Camera-off overlay with an avatar initial. */
+.cam-overlay {
+  position: absolute;
+  inset: 0;
+  display: none;
+  align-items: center;
+  justify-content: center;
+  background: #10141d;
+}
+
+.tile.cam-off .cam-overlay { display: flex; }
+
+.avatar {
+  width: 72px;
+  height: 72px;
+  border-radius: 50%;
+  background: var(--accent);
+  color: white;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 2rem;
+  font-weight: 600;
+}
+
+#stage.has-peers .tile.local .avatar {
+  width: 44px;
+  height: 44px;
+  font-size: 1.2rem;
+}
+
+/* Muted-mic badge. */
+.tile-badge {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  background: rgba(0, 0, 0, 0.55);
+  color: var(--bad);
+  display: none;
+  align-items: center;
+  justify-content: center;
+  backdrop-filter: blur(4px);
+}
+
+.tile-badge svg { width: 15px; height: 15px; }
+
+.tile.muted .tile-badge { display: flex; }
+
 .tile-name {
   position: absolute;
   left: 10px;
@@ -163,6 +232,28 @@ body {
 
 .gate-card h1 { font-size: 2rem; margin-bottom: 0.75rem; }
 .gate-card p { color: var(--muted); margin-bottom: 1.5rem; line-height: 1.5; }
+
+.gate-card input {
+  display: block;
+  width: 100%;
+  margin-bottom: 1rem;
+  padding: 0.8rem 1rem;
+  font-size: 1rem;
+  color: var(--text);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  outline: none;
+  text-align: center;
+}
+
+.gate-card input:focus { border-color: var(--accent); }
+
+.gate-card button:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+  transform: none;
+}
 
 .gate-card button {
   padding: 0.85rem 2.2rem;

@@ -21,7 +21,16 @@
     <div class="video-grid" id="video-grid">
       <div class="tile local" id="local-tile">
         <video id="local-video" autoplay playsinline muted></video>
+        <div class="cam-overlay"><span class="avatar" id="local-avatar"></span></div>
         <span class="tile-name">You</span>
+        <span class="tile-badge">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/>
+            <path d="M19 10v2a7 7 0 0 1-14 0v-2"/>
+            <line x1="12" y1="19" x2="12" y2="23"/>
+            <line x1="3" y1="3" x2="21" y2="21"/>
+          </svg>
+        </span>
       </div>
     </div>
     <div class="empty-hint" id="empty-hint">
@@ -58,7 +67,8 @@
     <div class="gate-card">
       <h1>🌀 Portal</h1>
       <p>Live video window between here and whoever else opens this page.</p>
-      <button id="btn-join">Step through</button>
+      <input id="name-input" type="text" maxlength="32" placeholder="Your name" autocomplete="name">
+      <button id="btn-join" disabled>Step through</button>
       <p class="gate-error" id="gate-error" hidden></p>
     </div>
   </div>
