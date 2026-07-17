@@ -147,10 +147,13 @@ joinBtn.addEventListener("click", async () => {
   await loadIceServers();
   connect();
 
-  // Restore ML noise suppression if it was on last time. Called inside the
-  // click handler so the AudioContext starts within a user gesture.
+  // Restore enhancement toggles from last time. Called inside the click
+  // handler so the audio/video pipelines start within a user gesture.
   if (localStorage.getItem("portal-ns") === "1") {
     setNoiseSuppression(true);
+  }
+  if (localStorage.getItem("portal-blur") === "1") {
+    setBackgroundBlur(true);
   }
 });
 
@@ -165,6 +168,7 @@ el("btn-leave").addEventListener("click", () => {
   for (const id of [...peers.keys()]) removePeer(id);
   localStream?.getTracks().forEach((t) => t.stop());
   screenTrack?.stop();
+  stopBlurPipeline();
   processedTrack?.stop();
   audioCtx?.close();
   el("local-video").srcObject = null;
@@ -340,9 +344,13 @@ async function switchDevice(kind, deviceId) {
     }
     // Peers receive the processed track while NS is on; nothing to swap then.
     if (!nsEnabled) await replaceOutgoing("audio", newTrack);
-  } else {
+  } else if (blurEnabled && blurSourceVideo) {
+    // Peers receive the blur canvas track; just re-point its camera feed.
+    blurSourceVideo.srcObject = new MediaStream([newTrack]);
+    await blurSourceVideo.play().catch(() => {});
+  } else if (!screenTrack) {
     // While screen sharing, the camera swap shows up when sharing ends.
-    if (!screenTrack) await replaceOutgoing("video", newTrack);
+    await replaceOutgoing("video", newTrack);
   }
 }
 
@@ -390,10 +398,11 @@ function stopScreenShare() {
   if (!screenTrack) return;
   screenTrack.stop();
   screenTrack = null;
-  const camera = localStream?.getVideoTracks()[0];
-  if (camera) replaceOutgoing("video", camera);
+  const track = activeVideoTrack(); // blurred camera if blur is on
+  if (track) replaceOutgoing("video", track);
   recapVideoSenders();
-  if (localStream) el("local-video").srcObject = localStream;
+  el("local-video").srcObject =
+    blurEnabled && blurTrack ? new MediaStream([blurTrack]) : localStream;
   el("local-tile").classList.remove("sharing");
   el("btn-share").classList.remove("active");
   sendState();
@@ -404,6 +413,245 @@ function recapVideoSenders() {
     peer.videoSenders.forEach(capVideoSender);
   }
 }
+
+// ---------- Background blur (MediaPipe selfie segmentation) ----------
+// Camera → hidden <video> → segmenter (person confidence mask) → canvas
+// composite (blurred frame under sharp masked person) → captureStream
+// track, swapped into peers via replaceTrack. Precedence for the outgoing
+// video track: screen share > blurred camera > raw camera.
+
+let blurEnabled = false;
+let blurTrack = null;
+let segmenter = null;
+let blurSourceVideo = null;
+let blurStopped = null;
+let blurCanvas, blurCtx, personCanvas, personCtx, maskCanvas, maskCtx, maskImageData;
+
+function activeVideoTrack() {
+  if (screenTrack) return screenTrack;
+  if (blurEnabled && blurTrack) return blurTrack;
+  return localStream?.getVideoTracks()[0] ?? null;
+}
+
+el("btn-blur").addEventListener("click", () => setBackgroundBlur(!blurEnabled));
+
+async function setBackgroundBlur(on) {
+  if (!localStream || on === blurEnabled) return;
+  const button = el("btn-blur");
+  button.disabled = true;
+  try {
+    if (on) {
+      await startBlurPipeline();
+      blurEnabled = true;
+    } else {
+      blurEnabled = false;
+      stopBlurPipeline();
+    }
+    if (!screenTrack) {
+      await replaceOutgoing("video", activeVideoTrack());
+      el("local-video").srcObject =
+        blurEnabled && blurTrack ? new MediaStream([blurTrack]) : localStream;
+    }
+    button.classList.toggle("active", blurEnabled);
+    localStorage.setItem("portal-blur", blurEnabled ? "1" : "0");
+  } catch (err) {
+    console.error("background blur unavailable", err);
+    blurEnabled = false;
+    stopBlurPipeline();
+    button.classList.remove("active");
+    localStorage.setItem("portal-blur", "0");
+  } finally {
+    button.disabled = false;
+  }
+}
+
+async function startBlurPipeline() {
+  if (!segmenter) {
+    const vision = await import("/vendor/segment/vision_bundle.mjs");
+    const fileset = await vision.FilesetResolver.forVisionTasks("/vendor/segment/wasm");
+    segmenter = await vision.ImageSegmenter.createFromOptions(fileset, {
+      baseOptions: {
+        modelAssetPath: "/vendor/segment/selfie_segmenter.tflite",
+        delegate: "GPU",
+      },
+      runningMode: "VIDEO",
+      outputConfidenceMasks: true,
+      outputCategoryMask: false,
+    });
+  }
+
+  blurSourceVideo = document.createElement("video");
+  blurSourceVideo.muted = true;
+  blurSourceVideo.playsInline = true;
+  blurSourceVideo.srcObject = new MediaStream([localStream.getVideoTracks()[0]]);
+  await blurSourceVideo.play();
+
+  const w = blurSourceVideo.videoWidth || 1280;
+  const h = blurSourceVideo.videoHeight || 720;
+  blurCanvas = Object.assign(document.createElement("canvas"), { width: w, height: h });
+  blurCtx = blurCanvas.getContext("2d");
+  personCanvas = Object.assign(document.createElement("canvas"), { width: w, height: h });
+  personCtx = personCanvas.getContext("2d");
+  maskCanvas = document.createElement("canvas");
+  maskCtx = maskCanvas.getContext("2d");
+  maskImageData = null;
+
+  let running = true;
+  blurStopped = () => {
+    running = false;
+  };
+  const schedule = blurSourceVideo.requestVideoFrameCallback
+    ? (cb) => blurSourceVideo.requestVideoFrameCallback(cb)
+    : (cb) => setTimeout(cb, 33);
+  const tick = () => {
+    if (!running) return;
+    if (blurSourceVideo.readyState >= 2) {
+      try {
+        segmenter.segmentForVideo(blurSourceVideo, performance.now(), renderBlurFrame);
+      } catch (err) {
+        console.error("segmentation frame failed", err);
+      }
+    }
+    schedule(tick);
+  };
+  schedule(tick);
+
+  blurTrack = blurCanvas.captureStream(30).getVideoTracks()[0];
+}
+
+function renderBlurFrame(result) {
+  try {
+    // Selfie segmenter: category 0 = background, 1 = person. With a
+    // two-entry mask list the person confidence is last; a single-mask
+    // model output is the person channel.
+    const masks = result.confidenceMasks;
+    const mask = masks?.[masks.length - 1];
+    if (!mask || !blurCtx) return;
+
+    const mw = mask.width;
+    const mh = mask.height;
+    if (!maskImageData || maskCanvas.width !== mw || maskCanvas.height !== mh) {
+      maskCanvas.width = mw;
+      maskCanvas.height = mh;
+      maskImageData = maskCtx.createImageData(mw, mh);
+    }
+    const confidence = mask.getAsFloat32Array();
+    const px = maskImageData.data;
+    for (let i = 0; i < confidence.length; i++) {
+      px[i * 4 + 3] = confidence[i] * 255; // person confidence → alpha
+    }
+    maskCtx.putImageData(maskImageData, 0, 0);
+
+    const w = blurCanvas.width;
+    const h = blurCanvas.height;
+    personCtx.clearRect(0, 0, w, h);
+    personCtx.drawImage(blurSourceVideo, 0, 0, w, h);
+    personCtx.globalCompositeOperation = "destination-in";
+    personCtx.drawImage(maskCanvas, 0, 0, w, h);
+    personCtx.globalCompositeOperation = "source-over";
+
+    blurCtx.filter = "blur(16px)";
+    blurCtx.drawImage(blurSourceVideo, 0, 0, w, h);
+    blurCtx.filter = "none";
+    blurCtx.drawImage(personCanvas, 0, 0, w, h);
+  } finally {
+    result.close?.();
+  }
+}
+
+function stopBlurPipeline() {
+  blurStopped?.();
+  blurStopped = null;
+  blurTrack?.stop();
+  blurTrack = null;
+  if (blurSourceVideo) {
+    blurSourceVideo.srcObject = null;
+    blurSourceVideo = null;
+  }
+}
+
+// ---------- Join/leave chimes ----------
+
+let chimeCtx = null;
+
+function chime(ascending) {
+  try {
+    chimeCtx = chimeCtx ?? new AudioContext();
+    if (chimeCtx.state === "suspended") chimeCtx.resume();
+    const notes = ascending ? [523.25, 783.99] : [783.99, 523.25]; // C5↔G5
+    for (const [i, freq] of notes.entries()) {
+      const osc = chimeCtx.createOscillator();
+      const gain = chimeCtx.createGain();
+      const t = chimeCtx.currentTime + i * 0.13;
+      osc.type = "sine";
+      osc.frequency.value = freq;
+      gain.gain.setValueAtTime(0.0001, t);
+      gain.gain.exponentialRampToValueAtTime(0.07, t + 0.02);
+      gain.gain.exponentialRampToValueAtTime(0.0001, t + 0.35);
+      osc.connect(gain).connect(chimeCtx.destination);
+      osc.start(t);
+      osc.stop(t + 0.4);
+    }
+  } catch {
+    // No audio output available; chimes are decorative.
+  }
+}
+
+// ---------- Active speaker highlight ----------
+
+const SPEAKING_LEVEL = 0.02;
+const SPEAKING_HOLD_MS = 700;
+/** @type {Map<string, number>} peer id (or "self") -> last time above threshold */
+const lastSpoke = new Map();
+
+setInterval(async () => {
+  if (document.hidden) return;
+  const now = performance.now();
+
+  await Promise.all(
+    [...peers.entries()].map(async ([id, peer]) => {
+      if (peer.pc.connectionState !== "connected") {
+        peer.tile.classList.remove("speaking");
+        return;
+      }
+      try {
+        const stats = await peer.pc.getStats();
+        let level = 0;
+        stats.forEach((r) => {
+          if (r.type === "inbound-rtp" && r.kind === "audio" && r.audioLevel !== undefined) {
+            level = Math.max(level, r.audioLevel);
+          }
+        });
+        if (level > SPEAKING_LEVEL) lastSpoke.set(id, now);
+        peer.tile.classList.toggle(
+          "speaking",
+          now - (lastSpoke.get(id) ?? 0) < SPEAKING_HOLD_MS
+        );
+      } catch {}
+    })
+  );
+
+  // Our own level comes from any connected pc's media-source stat.
+  const anyPc = [...peers.values()].find((p) => p.pc.connectionState === "connected")?.pc;
+  if (anyPc) {
+    try {
+      const stats = await anyPc.getStats();
+      let level = 0;
+      stats.forEach((r) => {
+        if (r.type === "media-source" && r.kind === "audio" && r.audioLevel !== undefined) {
+          level = r.audioLevel;
+        }
+      });
+      if (level > SPEAKING_LEVEL) lastSpoke.set("self", now);
+      el("local-tile").classList.toggle(
+        "speaking",
+        now - (lastSpoke.get("self") ?? 0) < SPEAKING_HOLD_MS
+      );
+    } catch {}
+  } else {
+    el("local-tile").classList.remove("speaking");
+  }
+}, 300);
 
 function setStatus(state, text) {
   const dot = el("status-dot");
@@ -479,6 +727,9 @@ function connect() {
         break;
       }
       case "peer-joined":
+        // Chime for genuine arrivals and grace-window returns (whose
+        // departure already chimed), not for silent socket replacements.
+        if (!peers.has(msg.id) || pendingRemovals.has(msg.id)) chime(true);
         // A rejoin within the grace window keeps the existing connection.
         cancelRemoval(msg.id);
         names.set(msg.id, msg.name);
@@ -488,6 +739,7 @@ function connect() {
         updateCount();
         break;
       case "peer-left":
+        if (peers.has(msg.id) && !pendingRemovals.has(msg.id)) chime(false);
         scheduleRemoval(msg.id);
         break;
       case "peer-state":
@@ -553,7 +805,7 @@ function getPeer(id) {
   peers.set(id, peer);
   updateCount();
 
-  const videoTrack = localStream.getVideoTracks()[0];
+  const videoTrack = activeVideoTrack();
   if (videoTrack) {
     const sender = pc.addTrack(videoTrack, localStream);
     videoSenders.push(sender);
@@ -760,6 +1012,7 @@ function removePeer(id) {
   names.delete(id);
   states.delete(id);
   prevStats.delete(id);
+  lastSpoke.delete(id);
   if (!peer) return;
   peer.pc.close();
   peer.tile.remove();

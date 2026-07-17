@@ -104,6 +104,12 @@ body {
 /* Peer dropped from signaling; kept during the rejoin grace window. */
 .tile.stale { opacity: 0.55; }
 
+/* Whoever is currently talking. */
+.tile.speaking {
+  border-color: var(--ok);
+  box-shadow: 0 0 0 2px rgba(52, 211, 153, 0.45);
+}
+
 /* Screen shares letterbox instead of cropping, and are never mirrored. */
 .tile.sharing video {
   object-fit: contain;
