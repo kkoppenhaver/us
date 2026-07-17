@@ -6,7 +6,7 @@ A WebRTC video portal — a live video window between everyone who opens the pag
 
 - **Cloudflare Worker** serves the static frontend and routes `/ws?room=<name>` to a Durable Object.
 - **`PortalRoom` Durable Object** (one per room, WebSocket Hibernation API) relays WebRTC signaling — offers, answers, and ICE candidates — between the peers in a room and broadcasts join/leave events.
-- **The browsers** connect directly to each other in a full WebRTC mesh: the newest arrival initiates an offer to each peer already present, so there is never offer glare. Media never touches the server.
+- **The browsers** connect directly to each other in a full WebRTC mesh: the newest arrival's connections send the first offers, and every pair runs the perfect-negotiation pattern (polite/impolite by peer id) so either side can renegotiate and ICE-restart. Media never touches the server.
 
 Rooms are capped at 8 peers (`MAX_PEERS` in `src/room.ts`) since mesh upload cost grows with each participant. Any `?room=name` gets its own isolated portal; the bare URL is the `main` room.
 
@@ -29,4 +29,3 @@ The custom domain is configured in `wrangler.jsonc` (`routes`) and requires the 
 ## Known limitations
 
 - STUN-only ICE (Google public STUN). Peers where both sides are behind strict/symmetric NAT need a TURN relay to connect — Cloudflare Calls TURN is the planned fix.
-- Only the connection initiator can renegotiate; full perfect negotiation (and with it robust ICE restarts) is on the roadmap.

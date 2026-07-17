@@ -1,7 +1,10 @@
 // Portal — WebRTC mesh client.
 // Signaling: WebSocket to the PortalRoom Durable Object.
-// Topology: full mesh; the newest peer to arrive initiates the offer
-// to each peer already in the room, so a pair never has offer glare.
+// Topology: full mesh. The newcomer's connections send the first offer
+// (existing peers create theirs lazily on receipt), and every pair runs
+// the "perfect negotiation" pattern so either side can renegotiate later
+// (ICE restarts, device changes); simultaneous offers resolve by role —
+// the peer with the lower id politely rolls back.
 //
 // Identity is stable for the life of the page (CLIENT_ID), so a signaling
 // reconnect replaces our old socket server-side instead of making us look
@@ -286,12 +289,16 @@ function connect() {
         for (const id of [...peers.keys()]) {
           if (!present.has(id)) removePeer(id);
         }
-        for (const peer of msg.peers) {
-          cancelRemoval(peer.id);
-          names.set(peer.id, peer.name);
-          // We initiate toward peers we don't already have a connection to.
-          getPeer(peer.id, true);
-          applyPeerState(peer.id, peer);
+        for (const info of msg.peers) {
+          cancelRemoval(info.id);
+          names.set(info.id, info.name);
+          // As the newcomer we create the connection (its negotiationneeded
+          // sends the first offer); existing peers create theirs on our offer.
+          const peer = getPeer(info.id);
+          // A connection that died while signaling was down gets restarted
+          // now that we can renegotiate again.
+          if (peer.pc.connectionState === "failed") peer.pc.restartIce();
+          applyPeerState(info.id, info);
         }
         updateCount();
         break;
@@ -350,14 +357,24 @@ function sendState() {
 
 // ---------- WebRTC ----------
 
-function getPeer(id, initiator) {
+function getPeer(id) {
   const existing = peers.get(id);
   if (existing) return existing;
 
   const pc = new RTCPeerConnection({ iceServers: ICE_SERVERS });
   const tile = createTile(id);
   const videoSenders = [];
-  const peer = { pc, tile, videoSenders };
+  // Perfect negotiation (per pair): the peer with the lower id is "polite" —
+  // on simultaneous offers it rolls back and accepts the other side's.
+  const peer = {
+    pc,
+    tile,
+    videoSenders,
+    polite: CLIENT_ID < id,
+    makingOffer: false,
+    ignoreOffer: false,
+    settingRemoteAnswer: false,
+  };
   peers.set(id, peer);
   updateCount();
 
@@ -380,7 +397,6 @@ function getPeer(id, initiator) {
   });
 
   pc.addEventListener("connectionstatechange", () => {
-    if (pc.connectionState === "failed") pc.restartIce();
     if (pc.connectionState === "connected") {
       // Encodings only exist after negotiation; re-apply the cap now.
       videoSenders.forEach(capVideoSender);
@@ -390,16 +406,23 @@ function getPeer(id, initiator) {
   });
   updateConnChip(tile, "connecting");
 
-  if (initiator) {
-    pc.addEventListener("negotiationneeded", async () => {
-      try {
-        await pc.setLocalDescription();
-        sendSignal(id, { description: pc.localDescription });
-      } catch (err) {
-        console.error("negotiation failed", err);
-      }
-    });
-  }
+  // With perfect negotiation either side can restart ICE; the resulting
+  // offer glare (both sides restarting at once) resolves via politeness.
+  pc.addEventListener("iceconnectionstatechange", () => {
+    if (pc.iceConnectionState === "failed") pc.restartIce();
+  });
+
+  pc.addEventListener("negotiationneeded", async () => {
+    try {
+      peer.makingOffer = true;
+      await pc.setLocalDescription();
+      sendSignal(id, { description: pc.localDescription });
+    } catch (err) {
+      console.error("negotiation failed", err);
+    } finally {
+      peer.makingOffer = false;
+    }
+  });
 
   return peer;
 }
@@ -421,16 +444,36 @@ async function capVideoSender(sender) {
 }
 
 async function handleSignal(from, data) {
-  const { pc } = getPeer(from, false);
+  const peer = getPeer(from);
+  const { pc } = peer;
   try {
     if (data.description) {
-      await pc.setRemoteDescription(data.description);
-      if (data.description.type === "offer") {
+      const { description } = data;
+      // Perfect negotiation: an offer that arrives while we're mid-offer
+      // (or otherwise not stable) is a collision. The impolite peer ignores
+      // it and lets its own offer win; the polite peer's
+      // setRemoteDescription implicitly rolls back its offer and answers.
+      const readyForOffer =
+        !peer.makingOffer &&
+        (pc.signalingState === "stable" || peer.settingRemoteAnswer);
+      const offerCollision = description.type === "offer" && !readyForOffer;
+      peer.ignoreOffer = !peer.polite && offerCollision;
+      if (peer.ignoreOffer) return;
+
+      peer.settingRemoteAnswer = description.type === "answer";
+      await pc.setRemoteDescription(description);
+      peer.settingRemoteAnswer = false;
+      if (description.type === "offer") {
         await pc.setLocalDescription();
         sendSignal(from, { description: pc.localDescription });
       }
     } else if (data.candidate) {
-      await pc.addIceCandidate(data.candidate);
+      try {
+        await pc.addIceCandidate(data.candidate);
+      } catch (err) {
+        // Candidates for an offer we deliberately ignored are expected noise.
+        if (!peer.ignoreOffer) throw err;
+      }
     }
   } catch (err) {
     console.error("signal handling failed", err);
