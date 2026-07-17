@@ -243,6 +243,8 @@ body {
 
 .ctl:hover { transform: scale(1.06); background: #1c2330; }
 .ctl.off { background: #3a2020; border-color: #5c2e2e; color: var(--bad); }
+.ctl.active { border-color: var(--accent); color: var(--accent); }
+.ctl:disabled { opacity: 0.4; cursor: not-allowed; transform: none; }
 .ctl.off .slash { display: block; }
 .ctl.danger:hover { background: #4a1f1f; }
 

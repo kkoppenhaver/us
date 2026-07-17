@@ -107,10 +107,17 @@ joinBtn.addEventListener("click", async () => {
   el("local-tile").querySelector(".tile-name").textContent = displayName;
   el("gate").hidden = true;
   connect();
+
+  // Restore ML noise suppression if it was on last time. Called inside the
+  // click handler so the AudioContext starts within a user gesture.
+  if (localStorage.getItem("portal-ns") === "1") {
+    setNoiseSuppression(true);
+  }
 });
 
 el("btn-mic").addEventListener("click", () => toggleTrack("audio", el("btn-mic")));
 el("btn-cam").addEventListener("click", () => toggleTrack("video", el("btn-cam")));
+el("btn-ns").addEventListener("click", () => setNoiseSuppression(!nsEnabled));
 
 el("btn-leave").addEventListener("click", () => {
   leaving = true;
@@ -118,9 +125,77 @@ el("btn-leave").addEventListener("click", () => {
   ws?.close();
   for (const id of [...peers.keys()]) removePeer(id);
   localStream?.getTracks().forEach((t) => t.stop());
+  processedTrack?.stop();
+  audioCtx?.close();
   el("local-video").srcObject = null;
   setStatus("offline", "left the portal — reload to rejoin");
 });
+
+// ---------- Noise suppression (RNNoise WASM worklet) ----------
+// Mic → AudioWorklet(RNNoise) → MediaStreamDestination; the processed
+// track is hot-swapped into every peer connection via replaceTrack(),
+// so toggling never renegotiates. Layered on top of the browser's own
+// noiseSuppression constraint.
+
+let nsEnabled = false;
+let audioCtx = null;
+let sourceNode = null;
+let rnnoiseNode = null;
+let processedTrack = null;
+
+function activeAudioTrack() {
+  const raw = localStream?.getAudioTracks()[0] ?? null;
+  return nsEnabled && processedTrack ? processedTrack : raw;
+}
+
+async function setNoiseSuppression(on) {
+  const button = el("btn-ns");
+  const micTrack = localStream?.getAudioTracks()[0];
+  if (!micTrack) return;
+
+  try {
+    if (on && !processedTrack) {
+      button.disabled = true;
+      // RNNoise operates on 48 kHz frames.
+      audioCtx = new AudioContext({ sampleRate: 48000 });
+      const { loadRnnoise, RnnoiseWorkletNode } = await import("/vendor/noise/index.js");
+      const wasmBinary = await loadRnnoise({
+        url: "/vendor/noise/rnnoise.wasm",
+        simdUrl: "/vendor/noise/rnnoise_simd.wasm",
+      });
+      await audioCtx.audioWorklet.addModule("/vendor/noise/rnnoise-worklet.js");
+
+      sourceNode = audioCtx.createMediaStreamSource(new MediaStream([micTrack]));
+      rnnoiseNode = new RnnoiseWorkletNode(audioCtx, { wasmBinary, maxChannels: 1 });
+      const destination = audioCtx.createMediaStreamDestination();
+      sourceNode.connect(rnnoiseNode);
+      rnnoiseNode.connect(destination);
+      processedTrack = destination.stream.getAudioTracks()[0];
+    }
+
+    // Suspend the graph when off so the worklet costs no CPU.
+    if (audioCtx) await (on ? audioCtx.resume() : audioCtx.suspend());
+
+    nsEnabled = on;
+    const track = activeAudioTrack();
+    await Promise.all(
+      [...peers.values()].map(({ pc }) => {
+        const sender = pc.getSenders().find((s) => s.track?.kind === "audio");
+        return sender ? sender.replaceTrack(track) : Promise.resolve();
+      })
+    );
+
+    button.classList.toggle("active", on);
+    localStorage.setItem("portal-ns", on ? "1" : "0");
+  } catch (err) {
+    console.error("noise suppression unavailable", err);
+    nsEnabled = false;
+    button.classList.remove("active");
+    localStorage.setItem("portal-ns", "0");
+  } finally {
+    button.disabled = false;
+  }
+}
 
 window.addEventListener("online", () => {
   if (leaving || !localStream) return;
@@ -286,13 +361,14 @@ function getPeer(id, initiator) {
   peers.set(id, peer);
   updateCount();
 
-  for (const track of localStream.getTracks()) {
-    const sender = pc.addTrack(track, localStream);
-    if (track.kind === "video") {
-      videoSenders.push(sender);
-      capVideoSender(sender);
-    }
+  const videoTrack = localStream.getVideoTracks()[0];
+  if (videoTrack) {
+    const sender = pc.addTrack(videoTrack, localStream);
+    videoSenders.push(sender);
+    capVideoSender(sender);
   }
+  const audioTrack = activeAudioTrack();
+  if (audioTrack) pc.addTrack(audioTrack, localStream);
 
   pc.addEventListener("icecandidate", ({ candidate }) => {
     if (candidate) sendSignal(id, { candidate });
