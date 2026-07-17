@@ -1,0 +1,68 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Portal</title>
+  <link rel="stylesheet" href="/style.css">
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🌀</text></svg>">
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <span class="brand-dot" id="status-dot"></span>
+      <span>Portal</span>
+      <span class="room-label" id="room-label"></span>
+    </div>
+    <div class="peer-count" id="peer-count">connecting…</div>
+  </header>
+
+  <main id="stage">
+    <div class="video-grid" id="video-grid">
+      <div class="tile local" id="local-tile">
+        <video id="local-video" autoplay playsinline muted></video>
+        <span class="tile-name">You</span>
+      </div>
+    </div>
+    <div class="empty-hint" id="empty-hint">
+      <p>You're the only one here.</p>
+      <p class="sub">Share this page — anyone who opens it joins the portal.</p>
+    </div>
+  </main>
+
+  <footer class="controls">
+    <button id="btn-mic" class="ctl" title="Toggle microphone">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/>
+        <path d="M19 10v2a7 7 0 0 1-14 0v-2"/>
+        <line x1="12" y1="19" x2="12" y2="23"/>
+        <line class="slash" x1="3" y1="3" x2="21" y2="21"/>
+      </svg>
+    </button>
+    <button id="btn-cam" class="ctl" title="Toggle camera">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <rect x="1" y="6" width="15" height="12" rx="2" ry="2"/>
+        <path d="M16 10l7-4v12l-7-4"/>
+        <line class="slash" x1="3" y1="3" x2="21" y2="21"/>
+      </svg>
+    </button>
+    <button id="btn-leave" class="ctl danger" title="Leave">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <line x1="6" y1="6" x2="18" y2="18"/>
+        <line x1="18" y1="6" x2="6" y2="18"/>
+      </svg>
+    </button>
+  </footer>
+
+  <div class="gate" id="gate">
+    <div class="gate-card">
+      <h1>🌀 Portal</h1>
+      <p>Live video window between here and whoever else opens this page.</p>
+      <button id="btn-join">Step through</button>
+      <p class="gate-error" id="gate-error" hidden></p>
+    </div>
+  </div>
+
+  <script src="/app.js"></script>
+</body>
+</html>

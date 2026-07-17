@@ -1,0 +1,16 @@
+{
+  "name": "portal",
+  "version": "1.0.0",
+  "private": true,
+  "description": "WebRTC video portal on Cloudflare Workers + Durable Objects",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^5.0.0",
+    "typescript": "^5.8.0",
+    "wrangler": "^4.0.0"
+  }
+}

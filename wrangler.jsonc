@@ -1,0 +1,23 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "portal",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-07-01",
+  "assets": {
+    "directory": "./public"
+  },
+  "durable_objects": {
+    "bindings": [
+      { "name": "PORTAL_ROOM", "class_name": "PortalRoom" }
+    ]
+  },
+  "migrations": [
+    { "tag": "v1", "new_sqlite_classes": ["PortalRoom"] }
+  ],
+  "routes": [
+    { "pattern": "us.keanan.fun", "custom_domain": true }
+  ],
+  "observability": {
+    "enabled": true
+  }
+}
