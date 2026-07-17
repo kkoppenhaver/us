@@ -155,6 +155,40 @@ body {
 
 .tile.muted .tile-badge { display: flex; }
 
+/* Connection state chip (hidden while healthy). */
+.tile-conn {
+  position: absolute;
+  top: 10px;
+  left: 10px;
+  padding: 0.2rem 0.6rem;
+  border-radius: 999px;
+  background: rgba(0, 0, 0, 0.55);
+  font-size: 0.7rem;
+  color: #fbbf24;
+  backdrop-filter: blur(4px);
+}
+
+.tile-conn.bad { color: var(--bad); }
+
+/* Live stats readout, revealed on hover. */
+.tile-stats {
+  position: absolute;
+  bottom: 10px;
+  right: 10px;
+  padding: 0.15rem 0.5rem;
+  border-radius: 999px;
+  background: rgba(0, 0, 0, 0.55);
+  font-size: 0.65rem;
+  font-variant-numeric: tabular-nums;
+  color: var(--muted);
+  backdrop-filter: blur(4px);
+  opacity: 0;
+  transition: opacity 0.2s;
+  pointer-events: none;
+}
+
+.tile:hover .tile-stats { opacity: 1; }
+
 .tile-name {
   position: absolute;
   left: 10px;

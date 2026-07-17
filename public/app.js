@@ -310,7 +310,9 @@ function getPeer(id, initiator) {
       videoSenders.forEach(capVideoSender);
     }
     tile.classList.toggle("connected", pc.connectionState === "connected");
+    updateConnChip(tile, pc.connectionState);
   });
+  updateConnChip(tile, "connecting");
 
   if (initiator) {
     pc.addEventListener("negotiationneeded", async () => {
@@ -359,6 +361,72 @@ async function handleSignal(from, data) {
   }
 }
 
+const CONN_LABELS = {
+  new: "connecting…",
+  connecting: "connecting…",
+  disconnected: "unstable…",
+  failed: "reconnecting…",
+};
+
+function updateConnChip(tile, state) {
+  const chip = tile.querySelector(".tile-conn");
+  if (!chip) return;
+  const label = CONN_LABELS[state];
+  chip.hidden = !label;
+  if (label) chip.textContent = label;
+  chip.classList.toggle("bad", state === "failed");
+}
+
+// ---------- Connection stats (hover a tile to see them) ----------
+
+/** @type {Map<string, {bytes: number, lost: number, received: number, ts: number}>} */
+const prevStats = new Map();
+
+setInterval(async () => {
+  for (const [id, peer] of peers) {
+    if (peer.pc.connectionState !== "connected") continue;
+    try {
+      const report = await peer.pc.getStats();
+      let bytes = 0;
+      let lost = 0;
+      let received = 0;
+      let rtt = null;
+      report.forEach((r) => {
+        if (r.type === "inbound-rtp" && r.kind === "video") {
+          bytes += r.bytesReceived ?? 0;
+          lost += r.packetsLost ?? 0;
+          received += r.packetsReceived ?? 0;
+        }
+        if (
+          r.type === "candidate-pair" &&
+          r.nominated &&
+          r.state === "succeeded" &&
+          r.currentRoundTripTime !== undefined
+        ) {
+          rtt = r.currentRoundTripTime;
+        }
+      });
+
+      const now = performance.now();
+      const prev = prevStats.get(id);
+      prevStats.set(id, { bytes, lost, received, ts: now });
+      if (!prev) continue;
+
+      const kbps = Math.max(0, Math.round(((bytes - prev.bytes) * 8) / (now - prev.ts)));
+      const dLost = lost - prev.lost;
+      const dReceived = received - prev.received;
+      const lossPct = dLost + dReceived > 0 ? (dLost / (dLost + dReceived)) * 100 : 0;
+
+      const parts = [`↓ ${kbps} kbps`];
+      if (rtt !== null) parts.push(`${Math.round(rtt * 1000)} ms`);
+      parts.push(`${lossPct.toFixed(1)}% loss`);
+      peer.tile.querySelector(".tile-stats").textContent = parts.join(" · ");
+    } catch {
+      // Peer torn down mid-poll; next tick skips it.
+    }
+  }
+}, 2_000);
+
 function applyPeerState(id, { muted, cameraOff }) {
   states.set(id, { muted: !!muted, cameraOff: !!cameraOff });
   const tile = peers.get(id)?.tile;
@@ -395,6 +463,7 @@ function removePeer(id) {
   const peer = peers.get(id);
   names.delete(id);
   states.delete(id);
+  prevStats.delete(id);
   if (!peer) return;
   peer.pc.close();
   peer.tile.remove();
@@ -428,7 +497,14 @@ function createTile(id) {
   badge.className = "tile-badge";
   badge.innerHTML = MIC_OFF_SVG;
 
-  tile.append(video, overlay, label, badge);
+  const conn = document.createElement("span");
+  conn.className = "tile-conn";
+  conn.hidden = true;
+
+  const stats = document.createElement("span");
+  stats.className = "tile-stats";
+
+  tile.append(video, overlay, label, badge, conn, stats);
   grid.append(tile);
 
   const state = states.get(id);
