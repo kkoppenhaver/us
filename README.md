@@ -29,3 +29,7 @@ The custom domain is configured in `wrangler.jsonc` (`routes`) and requires the 
 ## Known limitations
 
 - STUN-only ICE (Google public STUN). Peers where both sides are behind strict/symmetric NAT need a TURN relay to connect — Cloudflare Calls TURN is the planned fix.
+
+## Deploys
+
+Pushes to `main` deploy automatically via Cloudflare Workers Builds.
